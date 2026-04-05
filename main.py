@@ -180,6 +180,27 @@ def run_pipeline(
 
     ball_tracks = run_ball_tracker(all_frame_detections)
 
+    # ── Load TBA event roster for OCR validation ────────────────────────────────
+    # This dramatically improves OCR accuracy: only team numbers registered at the
+    # event are accepted; single-character errors are fuzzy-corrected automatically.
+    try:
+        _tba_cfg_path = Path("configs/tba_config.json")
+        if _tba_cfg_path.exists() and _net_ok("www.thebluealliance.com"):
+            _tba_cfg_ocr  = json.loads(_tba_cfg_path.read_text())
+            _ocr_event    = _tba_cfg_ocr.get("event_key", "")
+            _ocr_api_key  = _tba_cfg_ocr.get("api_key", "")
+            if _ocr_event and _ocr_api_key and _ocr_api_key != "YOUR_TBA_KEY_HERE":
+                from tba_client import get_event_teams as _get_evt_teams
+                from detect import set_tba_roster as _set_roster
+                _evt_teams = _get_evt_teams(_ocr_event)
+                _roster = [str(t.get("team_number", "")) for t in _evt_teams
+                           if t.get("team_number")]
+                _set_roster(_roster)
+            else:
+                print("  [Phase 5] TBA roster unavailable — OCR will accept any valid FRC number")
+    except Exception as _roster_exc:
+        print(f"  [Phase 5] TBA roster fetch skipped ({_roster_exc})")
+
     # ── Robot identity: spatial-match from saved file, OCR only as fallback ──────
     from track import build_robot_identity_map
     from detect import read_bumper_number
@@ -243,7 +264,7 @@ def run_pipeline(
         print(f"  [Phase 5] Running bumper OCR on {len(unknown_tracks)} unidentified tracks...")
         ocr_results = build_robot_identity_map(
             unknown_tracks, read_bumper_number, video_path,
-            frame_sample=200,   # cap at 200 frames to keep OCR fast
+            frame_sample=600,
         )
         for tid, info in ocr_results.items():
             robot_identity_map[tid] = info

@@ -347,188 +347,410 @@ def run_robot_detection(
             if d["class_name"].lower() in {c.lower() for c in _LOCAL_ROBOT_CLASSES}]
 
 
-# ---- OCR: bumper number reading (PaddleOCR) ---------------------------------
+# ---- OCR: bumper number reading ─────────────────────────────────────────────
+#
+# Multi-strategy approach:
+#   • 8 preprocessed image variants per strip (white mask, adaptive thresh, etc.)
+#   • Multiple crop zones (bottom 45/55/65/75%, top 25%, full crop)
+#   • Primary + secondary OCR engine ensemble (PaddleOCR + EasyOCR)
+#   • Common OCR character corrections (I→1, O→0, B→8, etc.)
+#   • TBA roster validation with edit-distance-1 fuzzy matching
+#   • Sharpness-weighted voting across all readings per track
+# ─────────────────────────────────────────────────────────────────────────────
 
 _paddle_ocr  = None
-_ocr_cache: dict[int, dict] = {}    # track_id -> {team_number, confidence, frames}
+_easy_ocr    = None   # secondary ensemble engine
+_ocr_cache: dict[int, dict] = {}
+_tba_roster: set[str] = set()   # loaded by set_tba_roster()
+
 _OCR_RULES = {
-    "min_frames_for_confidence": 5,
-    "majority_vote_threshold":   0.55,
+    "min_frames_for_confidence": 2,    # lower = commit faster
+    "majority_vote_threshold":   0.35, # weighted-vote share to accept result
     "fallback_if_unknown":       "UNKNOWN",
-    "blur_rejection_threshold":  20,
+    "blur_rejection_threshold":  5,    # Laplacian variance; only reject truly blurry
 }
 
 
-def _get_paddle_ocr():
-    """
-    Lazy-load OCR engine.
+# ── TBA roster validation ─────────────────────────────────────────────────────
 
-    Tries PaddleOCR 3.x first (faster on compatible systems).
-    Falls back to EasyOCR (GPU) which is stable on all platforms.
+def set_tba_roster(teams: list[str]) -> None:
     """
+    Populate the global TBA roster used to validate OCR output.
+
+    Call once at pipeline startup after fetching event teams.
+    Any OCR reading not in the roster (or within edit-distance 1) is rejected.
+
+    Args:
+        teams: List of team number strings, e.g. ["1719", "2377", ...].
+    """
+    global _tba_roster
+    _tba_roster = {str(t) for t in teams if t}
+    print(f"  [OCR] TBA roster loaded: {len(_tba_roster)} teams for validation")
+
+
+def _ocr_char_corrections(text: str) -> str:
+    """Apply common OCR character → digit substitutions."""
+    _subs = {
+        'O': '0', 'o': '0', 'D': '0', 'Q': '0',
+        'I': '1', 'l': '1', 'i': '1', '|': '1',
+        'B': '8',
+        'S': '5', 's': '5',
+        'G': '6', 'b': '6',
+        'Z': '2', 'z': '2',
+        'q': '9', 'g': '9',
+        'A': '4',
+        ' ': '', '-': '', '.': '',
+    }
+    return ''.join(_subs.get(c, c) for c in text)
+
+
+def _is_valid_frc_number(text: str) -> bool:
+    """True if text is a plausible FRC team number (1–9999, no leading zeros)."""
+    if not text or not text.isdigit() or not (2 <= len(text) <= 4):
+        return False
+    n = int(text)
+    return 1 <= n <= 9999 and not (len(text) > 1 and text[0] == '0')
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance between two strings (capped at 2 for speed)."""
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > 1:
+        return 99
+    m, n = len(a), len(b)
+    prev = list(range(n + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            cost = 0 if ca == cb else 1
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + cost))
+        prev = curr
+    return prev[n]
+
+
+def _match_to_roster(text: str) -> str | None:
+    """
+    Validate a candidate team number against the TBA roster.
+
+    • Exact match → accepted immediately.
+    • Edit-distance 1 → corrected to the canonical roster number.
+    • No roster loaded → accept any valid FRC number.
+    • Returns None if nothing matches.
+    """
+    if not _is_valid_frc_number(text):
+        return None
+    if not _tba_roster:
+        return text  # no roster; trust FRC range check
+    if text in _tba_roster:
+        return text
+    for team in _tba_roster:
+        if _edit_distance(text, team) <= 1:
+            return team
+    return None
+
+
+# ── OCR engine loaders ────────────────────────────────────────────────────────
+
+def _get_paddle_ocr():
+    """Lazy-load primary OCR engine: PaddleOCR → EasyOCR fallback."""
     global _paddle_ocr
     if _paddle_ocr is None:
-        # Try PaddleOCR 3.x
         try:
             from paddleocr import PaddleOCR
-            # Use ocr_version PP-OCRv4 (mobile/standard) — much faster load than server
-            engine = PaddleOCR(
-                use_textline_orientation=False,
-                lang="en",
-                ocr_version="PP-OCRv4",   # lightweight, fast
-                show_log=False,
-            )
-            # Smoke-test
+            engine = PaddleOCR(use_textline_orientation=False, lang="en",
+                               ocr_version="PP-OCRv4", show_log=False)
             import numpy as _np
-            _blank = _np.zeros((20, 40, 3), dtype=_np.uint8)
-            engine.ocr(_blank)
+            engine.ocr(_np.zeros((20, 40, 3), dtype=_np.uint8))
             _paddle_ocr = engine
-            print("  [OCR] Using PaddleOCR (PP-OCRv4, fast)")
+            print("  [OCR] Primary: PaddleOCR PP-OCRv4")
             return _paddle_ocr
         except Exception:
-            pass  # fall through to EasyOCR
-
-        # Fallback: EasyOCR with GPU
+            pass
         try:
             import torch, easyocr
-            _paddle_ocr = easyocr.Reader(
-                ["en"], gpu=torch.cuda.is_available(), verbose=False)
-            print("  [OCR] Using EasyOCR (GPU)" if torch.cuda.is_available()
-                  else "  [OCR] Using EasyOCR (CPU)")
-        except Exception as e:
-            print(f"  [OCR] (!) No OCR engine available: {e}")
+            _paddle_ocr = easyocr.Reader(["en"], gpu=torch.cuda.is_available(),
+                                          verbose=False)
+            print("  [OCR] Primary: EasyOCR (%s)" %
+                  ("GPU" if torch.cuda.is_available() else "CPU"))
+        except Exception as exc:
+            print(f"  [OCR] (!) No OCR engine available: {exc}")
             _paddle_ocr = None
     return _paddle_ocr
 
 
-def _paddle_readtext(ocr_engine, crop: np.ndarray) -> list[str]:
-    """
-    Run OCR on a crop and return 3-4 digit candidate strings.
-    Handles both EasyOCR (Reader) and PaddleOCR 3.x engines.
-    """
-    if ocr_engine is None:
-        return []
-    try:
-        import easyocr as _easyocr_mod
-        if isinstance(ocr_engine, _easyocr_mod.Reader):
-            results = ocr_engine.readtext(crop, detail=0, allowlist="0123456789")
-            return [r.strip() for r in results
-                    if r.strip().isdigit() and 3 <= len(r.strip()) <= 4]
-    except ImportError:
-        pass
+def _get_easy_ocr():
+    """Lazy-load secondary EasyOCR for ensemble (skipped if primary is already EasyOCR)."""
+    global _easy_ocr
+    if _easy_ocr is False:
+        return None
+    if _easy_ocr is None:
+        # Don't load secondary if primary is already EasyOCR
+        try:
+            import easyocr as _emod
+            if isinstance(_paddle_ocr, _emod.Reader):
+                _easy_ocr = False
+                return None
+        except ImportError:
+            pass
+        try:
+            import torch, easyocr
+            _easy_ocr = easyocr.Reader(["en"], gpu=torch.cuda.is_available(),
+                                        verbose=False)
+            print("  [OCR] Secondary ensemble: EasyOCR")
+        except Exception:
+            _easy_ocr = False
+    return _easy_ocr if _easy_ocr is not False else None
 
+
+def _run_engine(engine, crop: np.ndarray) -> list[tuple[str, float]]:
+    """
+    Run one OCR engine and return (raw_text, confidence) pairs.
+    Accepts strings 2–5 chars long (character correction happens later).
+    """
+    if engine is None or crop is None or crop.size == 0:
+        return []
+    results: list[tuple[str, float]] = []
     try:
-        # PaddleOCR 3.x — result is a list of OCRResult objects or nested lists
-        result = ocr_engine.ocr(crop)
-        candidates: list[str] = []
+        import easyocr as _emod
+        if isinstance(engine, _emod.Reader):
+            # allowlist broadened to include common OCR confusables
+            raw = engine.readtext(
+                crop, detail=1,
+                allowlist="0123456789OIlBSGZbqgsDQo ")
+            for (_, text, conf) in raw:
+                t = text.strip().replace(" ", "")
+                if 2 <= len(t) <= 5:
+                    results.append((t, float(conf)))
+            return results
+    except (ImportError, Exception):
+        pass
+    # PaddleOCR 3.x
+    try:
+        result = engine.ocr(crop)
         if not result:
-            return candidates
-        # Flatten: result may be [[lines]] or a list of OCRResult
-        rows = result[0] if isinstance(result[0], list) else result
-        for item in rows:
+            return results
+        rows = result[0] if (result and isinstance(result[0], list)) else result
+        for item in (rows or []):
             if item is None:
                 continue
-            # Each item: [ [box_points], (text, conf) ]
             try:
                 text = item[1][0].strip().replace(" ", "")
-            except (IndexError, TypeError):
+                conf = float(item[1][1])
+            except (IndexError, TypeError, ValueError):
                 continue
-            if text.isdigit() and 3 <= len(text) <= 4:
-                candidates.append(text)
-        return candidates
+            if 2 <= len(text) <= 5:
+                results.append((text, conf))
     except Exception:
+        pass
+    return results
+
+
+# ── Image preprocessing pipeline ─────────────────────────────────────────────
+
+def _bumper_strips(robot_crop: np.ndarray) -> list[np.ndarray]:
+    """
+    Slice the robot bounding box into candidate bumper strips.
+
+    Tries bottom (most common), top (some robots), and full crop.
+    """
+    h, w = robot_crop.shape[:2]
+    strips: list[np.ndarray] = []
+    # Bottom strips at multiple heights
+    for frac in (0.55, 0.65, 0.72, 0.80, 0.42):
+        strip = robot_crop[int(h * frac):, :]
+        if strip.shape[0] >= 6 and strip.shape[1] >= 10:
+            strips.append(strip)
+    # Top strips
+    for frac in (0.0, 0.08):
+        strip = robot_crop[int(h * frac): int(h * (frac + 0.28)), :]
+        if strip.shape[0] >= 6 and strip.shape[1] >= 10:
+            strips.append(strip)
+    # Full crop as last resort
+    if robot_crop.shape[0] >= 6 and robot_crop.shape[1] >= 10:
+        strips.append(robot_crop)
+    return strips
+
+
+def _preprocess_strip(strip: np.ndarray) -> list[np.ndarray]:
+    """
+    Generate 8 preprocessed variants of a bumper strip.
+
+    Each variant targets a different visual characteristic:
+      V1  4× CLAHE          — general contrast normalisation
+      V2  6× CLAHE          — more pixels for small strips
+      V3  white-text mask   — white digits on colored bumper → black on white
+      V4  yellow-text mask  — yellow digits on dark bumper
+      V5  adaptive thresh   — works well for lit text
+      V6  inverted thresh   — handles dark-on-light
+      V7  Otsu threshold    — bimodal intensity split
+      V8  unsharp + gray    — sharpened grayscale
+
+    Returns list of BGR images ready for OCR.
+    """
+    if strip is None or strip.size == 0:
+        return []
+    h, w = strip.shape[:2]
+    if h < 4 or w < 4:
         return []
 
+    def _up(img, s):
+        return cv2.resize(img, (img.shape[1] * s, img.shape[0] * s),
+                          interpolation=cv2.INTER_CUBIC)
 
-def _preprocess_bumper_crop(crop: np.ndarray, zone_start: float = 0.60) -> np.ndarray:
-    """
-    Prepare a robot bounding-box crop for OCR (#3).
+    def _clahe_bgr(bgr):
+        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+        ll, a, b = cv2.split(lab)
+        ll = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4)).apply(ll)
+        return cv2.cvtColor(cv2.merge([ll, a, b]), cv2.COLOR_LAB2BGR)
 
-    Steps:
-      1. Take the bottom section of the bbox (zone_start–100%) — bumper location.
-      2. Upscale 4× with bicubic interpolation so digits are large enough for OCR.
-      3. Apply CLAHE to normalise contrast (handles bright/dark field lighting).
+    up4 = _up(strip, 4)
+    hsv4 = cv2.cvtColor(up4, cv2.COLOR_BGR2HSV)
+    gray4 = cv2.cvtColor(up4, cv2.COLOR_BGR2GRAY)
 
-    Args:
-        zone_start: Fraction of bbox height to start the bumper strip (default 0.60
-                    = bottom 40%).  Callers can try multiple values.
+    variants: list[np.ndarray] = []
 
-    Returns:
-        Preprocessed BGR image ready for OCR.
-    """
-    h, w = crop.shape[:2]
-    bumper = crop[int(h * zone_start):, :]
-    if bumper.shape[0] < 4:
-        bumper = crop
-    # Upscale 4×
-    up = cv2.resize(bumper, (bumper.shape[1] * 4, bumper.shape[0] * 4),
-                    interpolation=cv2.INTER_CUBIC)
-    # CLAHE on L channel
-    lab  = cv2.cvtColor(up, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
-    l = clahe.apply(l)
-    up = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-    return up
+    # V1: 4× CLAHE
+    variants.append(_clahe_bgr(up4))
 
+    # V2: 6× CLAHE
+    variants.append(_clahe_bgr(_up(strip, 6)))
+
+    # V3: white-text mask (white digits on colored bumper)
+    white_mask = cv2.inRange(hsv4, np.array([0, 0, 165]), np.array([180, 60, 255]))
+    kern = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    white_mask = cv2.dilate(white_mask, kern, iterations=1)
+    variants.append(cv2.cvtColor(cv2.bitwise_not(white_mask), cv2.COLOR_GRAY2BGR))
+
+    # V4: yellow-text mask
+    yellow_mask = cv2.inRange(hsv4, np.array([18, 80, 150]), np.array([38, 255, 255]))
+    variants.append(cv2.cvtColor(cv2.bitwise_not(yellow_mask), cv2.COLOR_GRAY2BGR))
+
+    # V5: adaptive threshold on sharpened gray
+    blur = cv2.GaussianBlur(gray4, (0, 0), 1.5)
+    sharp = cv2.addWeighted(gray4, 2.0, blur, -1.0, 0)
+    thresh = cv2.adaptiveThreshold(sharp, 255,
+                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY, 15, 4)
+    variants.append(cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR))
+
+    # V6: inverted adaptive threshold
+    variants.append(cv2.cvtColor(cv2.bitwise_not(thresh), cv2.COLOR_GRAY2BGR))
+
+    # V7: Otsu threshold
+    _, otsu = cv2.threshold(
+        cv2.GaussianBlur(gray4, (3, 3), 0), 0, 255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    variants.append(cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR))
+
+    # V8: unsharp + grayscale
+    blur8 = cv2.GaussianBlur(gray4, (0, 0), 2)
+    unsharp = cv2.addWeighted(gray4, 1.5, blur8, -0.5, 0)
+    variants.append(cv2.cvtColor(unsharp, cv2.COLOR_GRAY2BGR))
+
+    return variants
+
+
+# ── Main OCR entry point ──────────────────────────────────────────────────────
 
 def read_bumper_number(
     robot_crop: np.ndarray,
     track_id:   int,
 ) -> str:
     """
-    Run OCR on a cropped robot image to read the bumper team number (#3).
+    Multi-strategy bumper OCR with TBA roster validation.
 
-    Preprocessing: bottom-30% crop → 3× upscale → CLAHE before OCR.
-    Caches results per track_id — does NOT re-OCR every frame.
+    Per crop:
+      1. Slice 7 strip positions (bottom at 5 heights, top, full).
+      2. Generate 8 preprocessed variants per strip.
+      3. Run primary + secondary OCR engines on each variant.
+      4. Apply character corrections (I→1, O→0, B→8 …).
+      5. Fuzzy-match each reading against TBA roster (edit-dist ≤ 1).
+      6. Accumulate sharpness-weighted vote per validated team number.
+
+    Returns team number string when weighted confidence is sufficient,
+    otherwise "UNKNOWN_{track_id}".
 
     Args:
-        robot_crop: BGR crop of the full robot bounding box.
-        track_id:   Track ID for this robot.
-
-    Returns:
-        Team number string (e.g. "1234") or "UNKNOWN_{track_id}".
+        robot_crop: BGR crop of full robot bounding box.
+        track_id:   DeepSORT track ID (key for caching across frames).
     """
-    # Try multiple bumper crop zones (bottom 40%, 30%, 20%) — pick first with OCR hit
-    ocr_engine = _get_paddle_ocr()
-    candidates: list[str] = []
-    for zone_start in (0.60, 0.70, 0.80, 0.50):
-        processed = _preprocess_bumper_crop(robot_crop, zone_start)
-        gray = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
-        lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        if lap_var < _OCR_RULES["blur_rejection_threshold"]:
-            continue  # this zone too blurry; try next
-        candidates = _paddle_readtext(ocr_engine, processed)
-        if candidates:
-            break  # got something — stop trying zones
+    primary   = _get_paddle_ocr()
+    secondary = _get_easy_ocr()
 
-    if not candidates:
-        fallback = f"{_OCR_RULES['fallback_if_unknown']}_{track_id}"
-        return _ocr_cache.get(track_id, {}).get("team_number") or fallback
-
-    reading = candidates[0]
-
-    # Update per-track cache
     if track_id not in _ocr_cache:
-        _ocr_cache[track_id] = {"readings": [], "team_number": None, "confidence": 0.0}
-    _ocr_cache[track_id]["readings"].append(reading)
+        _ocr_cache[track_id] = {
+            "weighted_counts": {},
+            "n_reads": 0,
+            "team_number": None,
+            "confidence": 0.0,
+        }
+    cache = _ocr_cache[track_id]
 
-    readings = _ocr_cache[track_id]["readings"]
-    if len(readings) >= _OCR_RULES["min_frames_for_confidence"]:
-        from collections import Counter
-        most_common, count = Counter(readings).most_common(1)[0]
-        conf = count / len(readings)
+    h, w = robot_crop.shape[:2]
+    if h < 20 or w < 20:
+        return cache["team_number"] or f"UNKNOWN_{track_id}"
+
+    # Overall crop sharpness (scales vote weights)
+    gray_full = cv2.cvtColor(robot_crop, cv2.COLOR_BGR2GRAY)
+    crop_sharpness = max(1.0, float(cv2.Laplacian(gray_full, cv2.CV_64F).var()))
+
+    strips = _bumper_strips(robot_crop)
+    new_hits = 0
+
+    for strip in strips:
+        sg = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+        strip_sharp = float(cv2.Laplacian(sg, cv2.CV_64F).var())
+        if strip_sharp < _OCR_RULES["blur_rejection_threshold"]:
+            continue
+
+        for variant in _preprocess_strip(strip):
+            for engine in (primary, secondary):
+                if engine is None:
+                    continue
+                for raw_text, ocr_conf in _run_engine(engine, variant):
+                    # Try corrected and original
+                    for candidate in (
+                        _ocr_char_corrections(raw_text),
+                        raw_text,
+                    ):
+                        if not candidate.isdigit() or len(candidate) < 2:
+                            continue
+                        matched = _match_to_roster(candidate)
+                        if matched is not None:
+                            weight = strip_sharp * max(0.1, ocr_conf)
+                            cache["weighted_counts"][matched] = (
+                                cache["weighted_counts"].get(matched, 0.0) + weight
+                            )
+                            new_hits += 1
+
+    cache["n_reads"] += 1
+    wc = cache["weighted_counts"]
+    if not wc:
+        return cache["team_number"] or f"UNKNOWN_{track_id}"
+
+    total = sum(wc.values())
+    best  = max(wc, key=wc.get)
+    conf  = wc[best] / total if total > 0 else 0.0
+
+    # Commit result if confidence threshold met
+    if cache["n_reads"] >= _OCR_RULES["min_frames_for_confidence"]:
         if conf >= _OCR_RULES["majority_vote_threshold"]:
-            _ocr_cache[track_id]["team_number"] = most_common
-            _ocr_cache[track_id]["confidence"]  = conf
-            return most_common
+            cache["team_number"] = best
+            cache["confidence"]  = conf
+            return best
 
-    return f"{_OCR_RULES['fallback_if_unknown']}_{track_id}"
+    # Soft fallback: return leading candidate even below threshold
+    # (build_robot_identity_map will do its own final voting)
+    if new_hits > 0 or cache["n_reads"] >= 2:
+        return best
+
+    return cache["team_number"] or f"UNKNOWN_{track_id}"
 
 
 def clear_ocr_cache(track_id: int | None = None) -> None:
     """
-    Clear OCR cache (call when a robot disappears for 60+ frames).
+    Clear the per-track OCR cache.
 
     Args:
         track_id: Specific track to clear, or None to clear all.
