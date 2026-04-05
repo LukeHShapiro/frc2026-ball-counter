@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# API keys — never commit these
+configs/roboflow_config.json
+configs/tba_config.json
+
+# Match-specific runtime data (regenerated each run)
+configs/match_identity.json
+
+# Large data files
+data/detections.json
+data/possession_log.json
+data/possession_log.sig
+data/score_history.json
+data/score_timeline.json
+data/accuracy_report.json
+data/metadata.json
+
+# Directories with generated/large content
+data/raw_frames/
+data/exports/
+data/tba_cache/
+data/statbotics_cache/
+data/inflight_training/
+data/labeled/
+data/splits/
+data/scoreboard_samples/
+
+# Keep these dirs (but not their generated contents)
+!data/
+!data/.gitkeep
+
+# Debug/preview images
+data/*.jpg
+data/*.png
+
+# Model weights (large binary files)
+models/base/
+models/trained/
+*.pt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude internal
+.claude/

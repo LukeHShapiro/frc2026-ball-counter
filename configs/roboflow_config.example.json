@@ -1,0 +1,14 @@
+{
+  "_comment": "Roboflow inference config. Keep api_key out of version control.",
+  "api_url": "https://serverless.roboflow.com",
+  "api_key": "YOUR_ROBOFLOW_KEY_HERE",
+  "workspace": "lukes-workspace-v71ty",
+  "workflow_id": "detect-count-and-visualize",
+  "image_input_name": "image",
+  "output_image_name": "output_image",
+  "predictions_output": "predictions",
+  "count_output": "count_objects",
+  "confidence_threshold": 0.4,
+  "max_workers": 4,
+  "batch_size": 1
+}

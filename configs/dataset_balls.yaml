@@ -1,0 +1,7 @@
+path: C:\Users\scout\OneDrive\Desktop\ClaudeProd\frc2026-ball-counter\data\splits\balls
+train: train
+val: val
+test: test
+nc: 1
+names:
+- Fuel

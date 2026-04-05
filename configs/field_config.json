@@ -1,0 +1,111 @@
+{
+    "_comment": "FRC 2026 REBUILT field configuration. Game piece: FUEL (foam sphere, 5.91in/15cm). Scoring: shoot FUEL into HUB (72in tall, 47x47in). HUBs are 158.6in from each alliance wall on a 651.2in long field.",
+    "_comment_resolution": "Pixel coordinates are for 1920x1080 native video resolution. Scoreboard bbox auto-detected per video.",
+    "game": {
+        "name": "REBUILT",
+        "year": 2026,
+        "game_piece": "FUEL",
+        "game_piece_shape": "sphere",
+        "game_piece_diameter_in": 5.91,
+        "points_per_fuel": 1,
+        "hub_height_in": 72,
+        "hub_size_in": 47,
+        "hub_distance_from_wall_in": 158.6,
+        "field_length_in": 651.2,
+        "field_width_in": 317.7
+    },
+    "field": {
+        "width_px": 1920,
+        "height_px": 1080,
+        "red_alliance_side": "left",
+        "blue_alliance_side": "right",
+        "center_line_x": 960
+    },
+    "scoring_zones": {
+        "_comment": "FRC 2026 REBUILT HUB zones. Red HUB: 158.6in from left wall = x~468px center. Blue HUB: 158.6in from right wall = x~1452px center. HUB opening at 72in height appears at y~150-300 in video. Zone sized at hub_size_in*2.95px/in = ~139px + margin. y1<700 so zone-protection keeps these safe from auto-overwrite.",
+        "red_goal": [
+            310,
+            120,
+            640,
+            330
+        ],
+        "blue_goal": [
+            1290,
+            130,
+            1620,
+            330
+        ]
+    },
+    "alliance_zones": {
+        "red": [
+            0,
+            0,
+            960,
+            780
+        ],
+        "blue": [
+            960,
+            0,
+            1920,
+            780
+        ]
+    },
+    "scoreboard": {
+        "_comment": "Auto-detected per video. bbox will be re-detected at runtime for each new video.",
+        "bbox": [
+            0,
+            825,
+            1920,
+            1080
+        ],
+        "auto_detected": true,
+        "red_score_region": [
+            0,
+            825,
+            806,
+            1080
+        ],
+        "blue_score_region": [
+            1113,
+            825,
+            1920,
+            1080
+        ]
+    },
+    "trajectory_frames_ahead": 30,
+    "driving_classification": {
+        "defensive": {
+            "min_time_opponent_half_pct": 0.3,
+            "min_shadowing_events": 3,
+            "max_personal_score_rate": 0.5
+        },
+        "reckless": {
+            "min_avg_velocity_percentile": 0.75,
+            "min_collision_rate_per_min": 1.5,
+            "min_angular_variance_percentile": 0.7
+        },
+        "smooth": {
+            "max_velocity_variance_percentile": 0.3,
+            "max_collision_rate_per_min": 0.5,
+            "max_angular_variance_percentile": 0.3
+        },
+        "defence_proof": {
+            "min_scoring_under_pressure_rate": 0.6,
+            "min_escape_success_rate": 0.5,
+            "max_path_repetition_score": 0.4
+        }
+    },
+    "possession_rules": {
+        "proximity_threshold_px": 80,
+        "possession_min_frames": 3,
+        "release_threshold_px": 150,
+        "velocity_handoff_threshold": 5
+    },
+    "ocr_rules": {
+        "min_frames_for_confidence": 10,
+        "majority_vote_threshold": 0.7,
+        "fallback_if_unknown": "UNKNOWN",
+        "re_ocr_on_reappearance": true,
+        "blur_rejection_threshold": 100
+    }
+}
