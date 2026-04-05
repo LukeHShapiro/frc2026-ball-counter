@@ -563,45 +563,65 @@ class ScoresPage(QWidget):
         def _generate():
             import requests as _req
 
-            _MODEL = "llama3.2:1b"   # ~1.3 GB — lightweight, runs fully offline
-            _BASE  = "http://localhost:11434"
+            # Best-to-fallback preference list — first installed model wins.
+            # Heavy/capable models rank above lightweight ones.
+            _PREFERENCE = [
+                "qwen3:30b", "qwen3:14b", "qwen3:8b", "qwen3:4b", "qwen3:1.7b", "qwen3",
+                "llama3.3:70b", "llama3.1:70b",
+                "mistral-large", "mistral-nemo",
+                "llama3.2:3b", "llama3.2", "llama3.1:8b", "llama3.1",
+                "phi4", "phi3.5", "phi3:medium", "phi3",
+                "gemma2:9b", "gemma2:2b", "gemma2",
+                "mistral", "qwen2.5:7b", "qwen2.5:3b", "qwen2.5",
+                "llama3.2:1b", "tinyllama",
+            ]
+            _FALLBACK = "llama3.2:1b"   # pulled automatically if nothing installed
+            _BASE = "http://localhost:11434"
 
             # ── 1. Check Ollama is reachable ──────────────────────────────────
             try:
-                _req.get(f"{_BASE}/api/tags", timeout=5).raise_for_status()
+                tags_r = _req.get(f"{_BASE}/api/tags", timeout=5)
+                tags_r.raise_for_status()
             except Exception:
                 result = (
                     "Ollama is not running.\n\n"
                     "To use this feature:\n"
                     "  1. Install Ollama: https://ollama.com\n"
-                    f"  2. Run:  ollama pull {_MODEL}\n"
-                    "  3. Ollama will start automatically on port 11434."
+                    f"  2. Run:  ollama pull {_FALLBACK}\n"
+                    "  3. Ollama starts automatically on port 11434."
                 )
                 QTimer.singleShot(0, lambda: _update(result, "Ollama not found"))
                 return
 
-            # ── 2. Pull model if not already installed ────────────────────────
-            installed = set()
-            try:
-                r = _req.get(f"{_BASE}/api/tags", timeout=5)
-                if r.ok:
-                    installed = {m["name"] for m in r.json().get("models", [])}
-            except Exception:
-                pass
+            # ── 2. Pick best installed model ──────────────────────────────────
+            installed = {m["name"] for m in tags_r.json().get("models", [])}
+            # Strip tags for prefix matching (e.g. "qwen3:latest" matches "qwen3")
+            installed_base = {n.split(":")[0] for n in installed}
 
-            if _MODEL not in installed:
+            chosen_model = None
+            for pref in _PREFERENCE:
+                base = pref.split(":")[0]
+                tag  = pref.split(":")[1] if ":" in pref else None
+                if tag and pref in installed:
+                    chosen_model = pref
+                    break
+                if not tag and base in installed_base:
+                    # Use whatever tag is installed (e.g. "qwen3:latest")
+                    chosen_model = next(n for n in installed if n.split(":")[0] == base)
+                    break
+
+            if chosen_model is None:
+                # Nothing installed — pull the fallback
                 QTimer.singleShot(0, lambda: status.setText(
-                    f"Downloading {_MODEL} (~1.3 GB) — this only happens once …"))
+                    f"No model found — downloading {_FALLBACK} (~1.3 GB, one-time) …"))
                 try:
-                    pull_resp = _req.post(
-                        f"{_BASE}/api/pull",
-                        json={"name": _MODEL, "stream": False},
-                        timeout=600,
-                    )
-                    pull_resp.raise_for_status()
+                    _req.post(f"{_BASE}/api/pull",
+                              json={"name": _FALLBACK, "stream": False},
+                              timeout=600).raise_for_status()
+                    chosen_model = _FALLBACK
                 except Exception as exc:
                     QTimer.singleShot(0, lambda: _update(
-                        f"Failed to download {_MODEL}: {exc}", "Download failed"))
+                        f"Failed to download {_FALLBACK}: {exc}", "Download failed"))
                     return
 
             # ── 3. Build prompt ───────────────────────────────────────────────
