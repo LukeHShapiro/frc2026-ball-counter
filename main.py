@@ -28,6 +28,11 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
+# Force unbuffered output so every phase header and progress line
+# appears immediately in the terminal (no stdout buffering on Windows).
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 
@@ -90,7 +95,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 2 - Video Metadata")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     import cv2 as _cv2_meta
     _cap = _cv2_meta.VideoCapture(str(video_path))
@@ -119,7 +124,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 5 - Detection + Tracking")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     detect_cache = Path("data/detections.json")
 
@@ -326,7 +331,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 6 - Possession Engine")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from possession import build_possession_log, save_possession_log
 
@@ -338,6 +343,9 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     # FIELD AUTO-CALIBRATION (scoring zones + scoreboard)
     # -------------------------------------------------------------------------
+    print("\n" + "=" * 60, flush=True)
+    print("FIELD AUTO-CALIBRATION", flush=True)
+    print("=" * 60, flush=True)
     from field_calibration import calibrate_field
     calibrate_field(
         video_path      = video_path,
@@ -353,7 +361,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 7 - Trajectory Engine")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from trajectory import detect_all_scoring_events
 
@@ -370,7 +378,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 8 - Scoreboard OCR")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     import cv2
     from scoreboard import locate_scoreboard, read_score, detect_score_change
@@ -481,7 +489,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 9 - Attribution Engine")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from inference_engine import (
         build_score_timeline, compute_final_scores, save_score_timeline
@@ -561,7 +569,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 13 - Driving Style Analysis")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from driving_analysis import classify_all_robots, generate_driving_report
 
@@ -594,7 +602,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 14 - TBA Alliance Builder")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     tba_cfg_path = Path("configs/tba_config.json")
     pick_list   = []
@@ -646,7 +654,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 10 - Score Aggregation")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from count import aggregate_scores, generate_accuracy_report, save_accuracy_report
     from scoreboard import validate_attribution
@@ -665,7 +673,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 11 - Export")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from export import (
         export_csv, export_json,
