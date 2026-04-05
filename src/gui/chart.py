@@ -123,6 +123,61 @@ def score_timeline_chart(canvas: ChartCanvas, timeline: list[dict],
     canvas.refresh()
 
 
+def match_history_chart(
+    canvas: ChartCanvas,
+    history: list[dict],
+    selected_team: str | None = None,
+) -> None:
+    """
+    Line chart showing score per analyzed match for one or all teams.
+
+    history = [{match_label, teams: {team_number: {score, ...}}}]
+    If selected_team is None or "All Teams", plot all teams.
+    """
+    canvas._fig.clf()
+    ax = canvas.add_subplot(111)
+
+    if not history:
+        ax.text(0.5, 0.5, "No match history yet.\nRun the pipeline on multiple matches.",
+                transform=ax.transAxes, ha="center", va="center", color=C["text_muted"],
+                fontsize=10)
+        canvas.refresh()
+        return
+
+    labels = [m.get("match_label", f"Match {i+1}") for i, m in enumerate(history)]
+    x = list(range(len(labels)))
+
+    # Collect all teams across history
+    all_teams: list[str] = []
+    seen: set[str] = set()
+    for m in history:
+        for t in m.get("teams", {}):
+            if t not in seen and t not in ("UNATTRIBUTED", "REPLACED"):
+                all_teams.append(t)
+                seen.add(t)
+
+    teams_to_plot = [selected_team] if (selected_team and selected_team != "All Teams") else all_teams
+
+    for i, team in enumerate(teams_to_plot):
+        ys = [m.get("teams", {}).get(team, {}).get("score", 0) for m in history]
+        color = TEAM_COLORS[i % len(TEAM_COLORS)]
+        ax.plot(x, ys, marker="o", linewidth=2, color=color,
+                label=f"Team {team}", markersize=5)
+        for xi, yi in zip(x, ys):
+            if yi:
+                ax.annotate(str(yi), (xi, yi), textcoords="offset points",
+                            xytext=(0, 6), ha="center", fontsize=8,
+                            color=color)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=9)
+    ax.set_ylabel("Score", color=C["text_muted"])
+    ax.set_title("Score per Match", color=C["text"], fontsize=12, pad=10)
+    if len(teams_to_plot) > 1:
+        ax.legend(loc="upper left", framealpha=0.7, fontsize=8)
+    canvas.refresh()
+
+
 def style_radar_chart(canvas: ChartCanvas, style_scores: dict[str, float],
                        team: str) -> None:
     """

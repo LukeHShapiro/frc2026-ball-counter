@@ -676,19 +676,33 @@ def run_pipeline(
     print("=" * 60, flush=True)
 
     from export import (
-        export_csv, export_json,
+        export_csv, export_json, append_match_history,
         export_driving_report_csv, export_driving_report_json,
     )
 
+    _full_results = {
+        "final_scores":    final_scores,
+        "score_timeline":  score_timeline,
+        "accuracy_report": report,
+        "video_file":      str(video_path),
+    }
+
     export_csv(final_scores, score_timeline, "data/exports/scores.csv")
-    export_json(
-        {
-            "final_scores":    final_scores,
-            "score_timeline":  score_timeline,
-            "accuracy_report": report,
-        },
-        "data/exports/results.json",
-    )
+    export_json(_full_results, "data/exports/results.json")
+
+    # Derive a human-readable match label from the video filename
+    import re as _re_ml
+    _vname = video_path.stem
+    _qual_m = _re_ml.search(r'qualif\w*\s+(\d+)', _vname, _re_ml.IGNORECASE)
+    _elim_m = _re_ml.search(r'(semi|final|quarter)\w*\s+(\d+)', _vname, _re_ml.IGNORECASE)
+    if _qual_m:
+        _match_label = f"Qual {_qual_m.group(1)}"
+    elif _elim_m:
+        _match_label = f"{_elim_m.group(1).capitalize()} {_elim_m.group(2)}"
+    else:
+        _match_label = _vname[:30]
+
+    append_match_history(_full_results, _match_label)
     export_driving_report_csv(driving_report, "data/exports/driving_report.csv")
     export_driving_report_json(driving_report, "data/exports/driving_report.json")
 

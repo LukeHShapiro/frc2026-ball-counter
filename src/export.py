@@ -104,6 +104,72 @@ def export_json(
     return output_path
 
 
+def append_match_history(
+    full_results: dict,
+    match_label: str,
+    history_path: str | Path | None = None,
+) -> Path:
+    """
+    Append this match's per-team scores to the cumulative match_history.json.
+
+    Each entry: {match_label, analyzed_at, video_file, teams: {team: score_dict}}
+
+    Args:
+        full_results:  The same dict passed to export_json().
+        match_label:   Human-readable match name, e.g. "Qual 3".
+        history_path:  Destination file. Defaults to data/exports/match_history.json.
+
+    Returns:
+        Path to the history file.
+    """
+    import datetime
+
+    if history_path is None:
+        history_path = Path(__file__).parent.parent / "data" / "exports" / "match_history.json"
+    history_path = Path(history_path)
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    history: list[dict] = []
+    if history_path.exists():
+        try:
+            history = json.loads(history_path.read_text())
+        except Exception:
+            history = []
+
+    final_scores = full_results.get("final_scores", {})
+    teams_snapshot = {
+        team: {
+            "score":      data.get("score", 0),
+            "high_conf":  data.get("high_conf", 0),
+            "med_conf":   data.get("med_conf", 0),
+            "low_conf":   data.get("low_conf", 0),
+            "unattributed": data.get("unattributed", 0),
+        }
+        for team, data in final_scores.items()
+        if team not in ("UNATTRIBUTED", "REPLACED")
+    }
+
+    entry = {
+        "match_label":  match_label,
+        "analyzed_at":  datetime.datetime.now().isoformat(timespec="seconds"),
+        "video_file":   full_results.get("video_file", ""),
+        "teams":        teams_snapshot,
+    }
+
+    # Replace existing entry with same match_label, or append
+    idx = next((i for i, e in enumerate(history) if e.get("match_label") == match_label), None)
+    if idx is not None:
+        history[idx] = entry
+    else:
+        history.append(entry)
+
+    with open(history_path, "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2, default=str)
+
+    print(f"  [Export] Match history updated ({len(history)} matches) -> {history_path}")
+    return history_path
+
+
 def export_annotated_video(
     video_path: str | Path,
     ball_tracks: dict,
