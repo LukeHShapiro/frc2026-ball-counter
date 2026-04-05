@@ -563,7 +563,48 @@ class ScoresPage(QWidget):
         def _generate():
             import requests as _req
 
-            # Build compact prompt from available data
+            _MODEL = "llama3.2:1b"   # ~1.3 GB — lightweight, runs fully offline
+            _BASE  = "http://localhost:11434"
+
+            # ── 1. Check Ollama is reachable ──────────────────────────────────
+            try:
+                _req.get(f"{_BASE}/api/tags", timeout=5).raise_for_status()
+            except Exception:
+                result = (
+                    "Ollama is not running.\n\n"
+                    "To use this feature:\n"
+                    "  1. Install Ollama: https://ollama.com\n"
+                    f"  2. Run:  ollama pull {_MODEL}\n"
+                    "  3. Ollama will start automatically on port 11434."
+                )
+                QTimer.singleShot(0, lambda: _update(result, "Ollama not found"))
+                return
+
+            # ── 2. Pull model if not already installed ────────────────────────
+            installed = set()
+            try:
+                r = _req.get(f"{_BASE}/api/tags", timeout=5)
+                if r.ok:
+                    installed = {m["name"] for m in r.json().get("models", [])}
+            except Exception:
+                pass
+
+            if _MODEL not in installed:
+                QTimer.singleShot(0, lambda: status.setText(
+                    f"Downloading {_MODEL} (~1.3 GB) — this only happens once …"))
+                try:
+                    pull_resp = _req.post(
+                        f"{_BASE}/api/pull",
+                        json={"name": _MODEL, "stream": False},
+                        timeout=600,
+                    )
+                    pull_resp.raise_for_status()
+                except Exception as exc:
+                    QTimer.singleShot(0, lambda: _update(
+                        f"Failed to download {_MODEL}: {exc}", "Download failed"))
+                    return
+
+            # ── 3. Build prompt ───────────────────────────────────────────────
             final_scores = results.get("final_scores", {})
             lines = []
             for team, d in final_scores.items():
@@ -593,52 +634,20 @@ class ScoresPage(QWidget):
                 "DRIVING STYLES:\n" + ("\n".join(drv_lines) or "  Not analyzed")
             )
 
-            # Try models in preference order
-            _models = ["qwen3-coder", "llama3.2", "llama3", "phi3", "mistral",
-                       "gemma2", "qwen2.5", "tinyllama"]
-            _base = "http://localhost:11434"
-
-            # Find first available model
-            chosen_model = None
-            try:
-                r = _req.get(f"{_base}/api/tags", timeout=5)
-                if r.ok:
-                    installed = {m["name"].split(":")[0]
-                                 for m in r.json().get("models", [])}
-                    for m in _models:
-                        if m in installed:
-                            chosen_model = m
-                            break
-                    if chosen_model is None and installed:
-                        chosen_model = next(iter(installed))
-            except Exception:
-                pass
-
-            if chosen_model is None:
-                result = (
-                    "Ollama is not running or has no models installed.\n\n"
-                    "To use this feature:\n"
-                    "  1. Install Ollama: https://ollama.com\n"
-                    "  2. Run: ollama pull llama3.2\n"
-                    "  3. Ollama will start automatically on port 11434."
-                )
-                QTimer.singleShot(0, lambda: _update(result, f"Model: none found"))
-                return
-
+            # ── 4. Generate ───────────────────────────────────────────────────
+            QTimer.singleShot(0, lambda: status.setText(f"Generating with {_MODEL} …"))
             try:
                 resp = _req.post(
-                    f"{_base}/api/generate",
-                    json={"model": chosen_model, "prompt": prompt, "stream": False},
+                    f"{_BASE}/api/generate",
+                    json={"model": _MODEL, "prompt": prompt, "stream": False},
                     timeout=120,
                 )
                 resp.raise_for_status()
-                summary = resp.json().get("response", "").strip()
-                if not summary:
-                    summary = "(Model returned an empty response)"
+                summary = resp.json().get("response", "").strip() or "(Empty response)"
             except Exception as exc:
                 summary = f"Error calling Ollama: {exc}"
 
-            QTimer.singleShot(0, lambda: _update(summary, f"Model: {chosen_model}"))
+            QTimer.singleShot(0, lambda: _update(summary, f"Model: {_MODEL}"))
 
         def _update(text: str, status_text: str):
             text_edit.setPlainText(text)
