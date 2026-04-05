@@ -163,6 +163,14 @@ class ScoresPage(QWidget):
         refresh_btn.setFixedWidth(90)
         refresh_btn.clicked.connect(self.reload)
         hdr.addWidget(refresh_btn)
+
+        summary_btn = QPushButton("Match Summary")
+        summary_btn.setObjectName("sec")
+        summary_btn.setFixedWidth(120)
+        summary_btn.setToolTip("Generate a match summary using a local Ollama model")
+        summary_btn.clicked.connect(self._show_ollama_summary)
+        hdr.addWidget(summary_btn)
+
         root.addLayout(hdr)
 
         root.addWidget(self._lbl(
@@ -506,6 +514,138 @@ class ScoresPage(QWidget):
 
         self._table.resizeColumnsToContents()
         self._table.setSortingEnabled(True)
+
+    # ── Ollama match summary ──────────────────────────────────────────────────
+
+    def _show_ollama_summary(self):
+        """
+        Generate a plain-language match summary using a locally running Ollama model.
+
+        Calls http://localhost:11434/api/generate — no internet or API key required.
+        Tries common installed models in order; shows an error if Ollama isn't running.
+        """
+        from PyQt6.QtWidgets import (
+            QDialog, QTextEdit, QDialogButtonBox, QMessageBox,
+        )
+
+        results_path = _ROOT / "data" / "exports" / "results.json"
+        if not results_path.exists():
+            QMessageBox.warning(self, "No Data", "Run the pipeline first.")
+            return
+
+        try:
+            results = json.loads(results_path.read_text())
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", str(e))
+            return
+
+        # Build dialog immediately so the user sees activity
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Match Summary (Ollama)")
+        dlg.resize(640, 420)
+        dlg_lay = QVBoxLayout(dlg)
+
+        status = QLabel("Contacting Ollama at localhost:11434 …")
+        status.setObjectName("muted")
+        dlg_lay.addWidget(status)
+
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlaceholderText("Summary will appear here …")
+        dlg_lay.addWidget(text_edit)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_box.rejected.connect(dlg.reject)
+        dlg_lay.addWidget(btn_box)
+
+        dlg.show()
+
+        def _generate():
+            import requests as _req
+
+            # Build compact prompt from available data
+            final_scores = results.get("final_scores", {})
+            lines = []
+            for team, d in final_scores.items():
+                if team in ("UNATTRIBUTED", "REPLACED"):
+                    continue
+                lines.append(
+                    f"  Team {team}: {d['score']} pts "
+                    f"(H:{d['high_conf']} M:{d['med_conf']} L:{d['low_conf']})"
+                )
+
+            driving_path = _ROOT / "data" / "exports" / "driving_report.json"
+            drv_lines = []
+            if driving_path.exists():
+                try:
+                    dr = json.loads(driving_path.read_text())
+                    for team, info in dr.items():
+                        style = info.get("style", info.get("primary_style", "?"))
+                        drv_lines.append(f"  Team {team}: {style}")
+                except Exception:
+                    pass
+
+            prompt = (
+                "You are an FRC match analyst. Write a concise 4-6 sentence match summary "
+                "from this data. Mention top scorer, notable confidence issues, driving style "
+                "observations, and likely match winner. Be specific with team numbers.\n\n"
+                "SCORES:\n" + ("\n".join(lines) or "  None") + "\n\n"
+                "DRIVING STYLES:\n" + ("\n".join(drv_lines) or "  Not analyzed")
+            )
+
+            # Try models in preference order
+            _models = ["qwen3-coder", "llama3.2", "llama3", "phi3", "mistral",
+                       "gemma2", "qwen2.5", "tinyllama"]
+            _base = "http://localhost:11434"
+
+            # Find first available model
+            chosen_model = None
+            try:
+                r = _req.get(f"{_base}/api/tags", timeout=5)
+                if r.ok:
+                    installed = {m["name"].split(":")[0]
+                                 for m in r.json().get("models", [])}
+                    for m in _models:
+                        if m in installed:
+                            chosen_model = m
+                            break
+                    if chosen_model is None and installed:
+                        chosen_model = next(iter(installed))
+            except Exception:
+                pass
+
+            if chosen_model is None:
+                result = (
+                    "Ollama is not running or has no models installed.\n\n"
+                    "To use this feature:\n"
+                    "  1. Install Ollama: https://ollama.com\n"
+                    "  2. Run: ollama pull llama3.2\n"
+                    "  3. Ollama will start automatically on port 11434."
+                )
+                QTimer.singleShot(0, lambda: _update(result, f"Model: none found"))
+                return
+
+            try:
+                resp = _req.post(
+                    f"{_base}/api/generate",
+                    json={"model": chosen_model, "prompt": prompt, "stream": False},
+                    timeout=120,
+                )
+                resp.raise_for_status()
+                summary = resp.json().get("response", "").strip()
+                if not summary:
+                    summary = "(Model returned an empty response)"
+            except Exception as exc:
+                summary = f"Error calling Ollama: {exc}"
+
+            QTimer.singleShot(0, lambda: _update(summary, f"Model: {chosen_model}"))
+
+        def _update(text: str, status_text: str):
+            text_edit.setPlainText(text)
+            status.setText(status_text)
+
+        threading.Thread(target=_generate, daemon=True).start()
+        dlg.exec()
 
     @staticmethod
     def _lbl(text: str, obj: str = "") -> QLabel:

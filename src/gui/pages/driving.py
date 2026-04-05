@@ -13,10 +13,22 @@ from PyQt6.QtWidgets import (
     QScrollArea, QSplitter, QVBoxLayout, QWidget,
 )
 
-from ..chart import ChartCanvas, style_radar_chart
+from PyQt6.QtWidgets import QComboBox, QTabWidget  # extra widgets for heatmap tab
+
+from ..chart import ChartCanvas, style_radar_chart, robot_heatmap_chart
 from ..theme import C, STYLE_COLOR, TEAM_COLORS
 
 _ROOT = Path(__file__).parent.parent.parent.parent
+_POSITIONS_PATH = _ROOT / "data" / "exports" / "robot_positions.json"
+
+
+def _load_positions() -> dict:
+    if _POSITIONS_PATH.exists():
+        try:
+            return json.loads(_POSITIONS_PATH.read_text())
+        except Exception:
+            pass
+    return {}
 
 
 def _load_driving() -> dict:
@@ -191,27 +203,54 @@ class DrivingPage(QWidget):
         scroll.setWidget(self._cards_widget)
         splitter.addWidget(scroll)
 
-        # Right: style chart for selected robot
-        right = QWidget()
-        right_lay = QVBoxLayout(right)
-        right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(8)
-        right_lay.addWidget(self._lbl("STYLE SCORES", "kpi_lbl"))
-        self._chart = ChartCanvas(height=4)
-        right_lay.addWidget(self._chart)
-        right_lay.addStretch()
-        splitter.addWidget(right)
+        # Right: tabbed panel — Style Scores | Field Heatmap
+        right_tabs = QTabWidget()
+        right_tabs.setStyleSheet(
+            f"QTabBar::tab {{ color: {C['text_muted']}; padding: 6px 14px; }}"
+            f"QTabBar::tab:selected {{ color: {C['accent']}; border-bottom: 2px solid {C['accent']}; }}"
+        )
 
-        splitter.setSizes([480, 340])
+        # Tab 1: Style radar chart
+        style_tab = QWidget()
+        style_lay = QVBoxLayout(style_tab)
+        style_lay.setContentsMargins(4, 8, 4, 4)
+        style_lay.addWidget(self._lbl("STYLE SCORES", "kpi_lbl"))
+        self._chart = ChartCanvas(height=4)
+        style_lay.addWidget(self._chart)
+        style_lay.addStretch()
+        right_tabs.addTab(style_tab, "Style Scores")
+
+        # Tab 2: Field heatmap
+        heat_tab = QWidget()
+        heat_lay = QVBoxLayout(heat_tab)
+        heat_lay.setContentsMargins(4, 8, 4, 4)
+
+        heat_ctrl = QHBoxLayout()
+        heat_ctrl.addWidget(self._lbl("Team:", "kpi_lbl"))
+        self._heatmap_combo = QComboBox()
+        self._heatmap_combo.setMinimumWidth(130)
+        self._heatmap_combo.addItem("All Teams")
+        self._heatmap_combo.currentTextChanged.connect(self._update_heatmap)
+        heat_ctrl.addWidget(self._heatmap_combo)
+        heat_ctrl.addStretch()
+        heat_lay.addLayout(heat_ctrl)
+
+        self._heatmap_canvas = ChartCanvas(height=4)
+        heat_lay.addWidget(self._heatmap_canvas)
+        right_tabs.addTab(heat_tab, "Field Heatmap")
+
+        splitter.addWidget(right_tabs)
+        splitter.setSizes([480, 380])
         root.addWidget(splitter)
 
         self._cards: list[_RobotCard] = []
         self.reload()
 
     def reload(self):
-        data = _load_driving()
+        data      = _load_driving()
+        positions = _load_positions()
 
-        # Clear
+        # Clear robot cards
         for card in self._cards:
             self._cards_layout.removeWidget(card)
             card.deleteLater()
@@ -222,21 +261,38 @@ class DrivingPage(QWidget):
             ph.setObjectName("muted")
             self._cards_layout.insertWidget(0, ph)
             self._cards.append(ph)
-            return
+        else:
+            teams = list(data.keys())
+            for i, team in enumerate(teams):
+                card = _RobotCard(team, data[team],
+                                  TEAM_COLORS[i % len(TEAM_COLORS)])
+                self._cards_layout.insertWidget(i, card)
+                self._cards.append(card)
 
-        teams = list(data.keys())
-        for i, team in enumerate(teams):
-            card = _RobotCard(team, data[team],
-                              TEAM_COLORS[i % len(TEAM_COLORS)])
-            self._cards_layout.insertWidget(i, card)
-            self._cards.append(card)
-
-        # Draw chart for first robot
-        if teams:
+            # Style chart for first robot
             first = data[teams[0]]
             style_scores = first.get("style_scores", {})
             if style_scores:
                 style_radar_chart(self._chart, style_scores, teams[0])
+
+        # Refresh heatmap team selector
+        self._positions = positions
+        current = self._heatmap_combo.currentText()
+        self._heatmap_combo.blockSignals(True)
+        self._heatmap_combo.clear()
+        self._heatmap_combo.addItem("All Teams")
+        for t in sorted(positions.keys(), key=lambda x: int(x) if x.isdigit() else 99999):
+            self._heatmap_combo.addItem(t)
+        idx = self._heatmap_combo.findText(current)
+        self._heatmap_combo.setCurrentIndex(max(0, idx))
+        self._heatmap_combo.blockSignals(False)
+
+        self._update_heatmap(self._heatmap_combo.currentText())
+
+    def _update_heatmap(self, team: str):
+        positions = getattr(self, "_positions", {})
+        robot_heatmap_chart(self._heatmap_canvas, positions,
+                            selected_team=team if team != "All Teams" else None)
 
     @staticmethod
     def _lbl(text: str, obj: str = "") -> QLabel:

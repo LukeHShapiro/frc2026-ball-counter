@@ -178,6 +178,106 @@ def match_history_chart(
     canvas.refresh()
 
 
+def robot_heatmap_chart(
+    canvas: ChartCanvas,
+    positions: dict,
+    selected_team: str | None = None,
+    field_w: int = 1920,
+    field_h: int = 1080,
+) -> None:
+    """
+    2D density heat map of robot centroid positions over the match.
+
+    Single team → gaussian heat map in that team's colour.
+    All teams   → light scatter plot with one colour per team.
+
+    positions = {team_number: [[cx, cy, frame_id], ...]}
+    """
+    import numpy as np
+
+    canvas._fig.clf()
+    ax = canvas.add_subplot(111)
+
+    if not positions:
+        ax.text(0.5, 0.5, "No position data.\nRun the pipeline first.",
+                transform=ax.transAxes, ha="center", va="center",
+                color=C["text_muted"], fontsize=10)
+        canvas.refresh()
+        return
+
+    teams = list(positions.keys())
+    teams_to_plot = (
+        [selected_team]
+        if (selected_team and selected_team != "All Teams" and selected_team in positions)
+        else teams
+    )
+
+    ax.set_xlim(0, field_w)
+    ax.set_ylim(field_h, 0)   # image-coord y (0 at top)
+    ax.set_aspect("auto")
+
+    # Field outline + centre line
+    from matplotlib.patches import Rectangle
+    ax.add_patch(Rectangle((0, 0), field_w, field_h,
+                            fill=False, edgecolor=C["border"], linewidth=1.5))
+    ax.axvline(field_w / 2, color=C["border"], linewidth=1, alpha=0.5, linestyle="--")
+
+    # Alliance labels
+    ax.text(field_w * 0.15, field_h * 0.97, "RED SIDE",
+            ha="center", color="#ef4444", fontsize=7, alpha=0.55)
+    ax.text(field_w * 0.85, field_h * 0.97, "BLUE SIDE",
+            ha="center", color="#3b82f6", fontsize=7, alpha=0.55)
+
+    if len(teams_to_plot) == 1:
+        team = teams_to_plot[0]
+        pts  = positions[team]
+        xs   = np.array([p[0] for p in pts], dtype=float)
+        ys   = np.array([p[1] for p in pts], dtype=float)
+
+        h2d, xedges, yedges = np.histogram2d(
+            xs, ys, bins=[80, 45],
+            range=[[0, field_w], [0, field_h]])
+
+        try:
+            from scipy.ndimage import gaussian_filter
+            h2d = gaussian_filter(h2d.T, sigma=2.5)
+        except ImportError:
+            h2d = h2d.T
+
+        import matplotlib.colors as mcolors
+        from matplotlib.colors import LinearSegmentedColormap
+        color = TEAM_COLORS[teams.index(team) % len(TEAM_COLORS)]
+        try:
+            rgb  = mcolors.to_rgb(color)
+            cmap = LinearSegmentedColormap.from_list(
+                "t", [(0, 0, 0, 0), (*rgb, 1.0)], N=256)
+        except Exception:
+            cmap = "hot"
+
+        ax.imshow(h2d, origin="upper",
+                  extent=[0, field_w, field_h, 0],
+                  cmap=cmap, alpha=0.85, aspect="auto")
+        ax.set_title(f"Team {team} — Movement Density",
+                     color=C["text"], fontsize=11, pad=8)
+    else:
+        for i, team in enumerate(teams_to_plot):
+            pts = positions.get(team, [])
+            if not pts:
+                continue
+            step = max(1, len(pts) // 500)
+            xs = [p[0] for p in pts[::step]]
+            ys = [p[1] for p in pts[::step]]
+            ax.scatter(xs, ys, c=TEAM_COLORS[i % len(TEAM_COLORS)],
+                       s=3, alpha=0.22, label=f"Team {team}")
+        ax.legend(loc="upper right", framealpha=0.6, fontsize=8, markerscale=4)
+        ax.set_title("All Robots — Field Coverage",
+                     color=C["text"], fontsize=11, pad=8)
+
+    ax.set_xlabel("Field X (px)", color=C["text_muted"], fontsize=8)
+    ax.set_ylabel("Field Y (px)", color=C["text_muted"], fontsize=8)
+    canvas.refresh()
+
+
 def style_radar_chart(canvas: ChartCanvas, style_scores: dict[str, float],
                        team: str) -> None:
     """

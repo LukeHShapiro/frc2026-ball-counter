@@ -170,6 +170,56 @@ def append_match_history(
     return history_path
 
 
+def export_robot_positions(
+    robot_tracks: dict,
+    robot_identity_map: dict,
+    output_path: str | Path | None = None,
+) -> Path:
+    """
+    Save per-team robot centroid positions for heatmap visualisation.
+
+    Output format:
+        {team_number: [[cx, cy, frame_id], ...]}
+
+    Args:
+        robot_tracks:       {track_id: [{frame_id, bbox, ...}]}
+        robot_identity_map: {track_id: {team_number, ...}}
+        output_path:        Defaults to data/exports/robot_positions.json.
+
+    Returns:
+        Path to the written file.
+    """
+    if output_path is None:
+        output_path = Path(__file__).parent.parent / "data" / "exports" / "robot_positions.json"
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    positions: dict[str, list] = {}
+
+    for track_id, entries in robot_tracks.items():
+        team = robot_identity_map.get(track_id, {}).get("team_number", f"UNKNOWN_{track_id}")
+        if str(team).startswith("UNKNOWN"):
+            continue
+        pts: list = []
+        for e in entries:
+            b = e["bbox"]
+            cx = round((b[0] + b[2]) / 2, 1)
+            cy = round((b[1] + b[3]) / 2, 1)
+            pts.append([cx, cy, e["frame_id"]])
+        if pts:
+            if team in positions:
+                positions[team].extend(pts)
+            else:
+                positions[team] = pts
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(positions, f)
+
+    total = sum(len(v) for v in positions.values())
+    print(f"  [Export] Robot positions: {len(positions)} teams, {total} points -> {output_path}")
+    return output_path
+
+
 def export_annotated_video(
     video_path: str | Path,
     ball_tracks: dict,

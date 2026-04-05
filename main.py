@@ -699,6 +699,7 @@ def run_pipeline(
     from export import (
         export_csv, export_json, append_match_history,
         export_driving_report_csv, export_driving_report_json,
+        export_robot_positions,
     )
 
     _full_results = {
@@ -724,6 +725,8 @@ def run_pipeline(
         _match_label = _vname[:30]
 
     append_match_history(_full_results, _match_label)
+    export_robot_positions(robot_tracks, robot_identity_map,
+                           "data/exports/robot_positions.json")
     export_driving_report_csv(driving_report, "data/exports/driving_report.csv")
     export_driving_report_json(driving_report, "data/exports/driving_report.json")
 
