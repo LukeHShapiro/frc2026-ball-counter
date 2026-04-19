@@ -28,6 +28,11 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
+# Force unbuffered output so every phase header and progress line
+# appears immediately in the terminal (no stdout buffering on Windows).
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 
@@ -90,7 +95,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 2 - Video Metadata")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     import cv2 as _cv2_meta
     _cap = _cv2_meta.VideoCapture(str(video_path))
@@ -119,7 +124,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 5 - Detection + Tracking")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     detect_cache = Path("data/detections.json")
 
@@ -174,6 +179,27 @@ def run_pipeline(
         )
 
     ball_tracks = run_ball_tracker(all_frame_detections)
+
+    # ── Load TBA event roster for OCR validation ────────────────────────────────
+    # This dramatically improves OCR accuracy: only team numbers registered at the
+    # event are accepted; single-character errors are fuzzy-corrected automatically.
+    try:
+        _tba_cfg_path = Path("configs/tba_config.json")
+        if _tba_cfg_path.exists() and _net_ok("www.thebluealliance.com"):
+            _tba_cfg_ocr  = json.loads(_tba_cfg_path.read_text())
+            _ocr_event    = _tba_cfg_ocr.get("event_key", "")
+            _ocr_api_key  = _tba_cfg_ocr.get("api_key", "")
+            if _ocr_event and _ocr_api_key and _ocr_api_key != "YOUR_TBA_KEY_HERE":
+                from tba_client import get_event_teams as _get_evt_teams
+                from detect import set_tba_roster as _set_roster
+                _evt_teams = _get_evt_teams(_ocr_event)
+                _roster = [str(t.get("team_number", "")) for t in _evt_teams
+                           if t.get("team_number")]
+                _set_roster(_roster)
+            else:
+                print("  [Phase 5] TBA roster unavailable — OCR will accept any valid FRC number")
+    except Exception as _roster_exc:
+        print(f"  [Phase 5] TBA roster fetch skipped ({_roster_exc})")
 
     # ── Robot identity: spatial-match from saved file, OCR only as fallback ──────
     from track import build_robot_identity_map
@@ -238,7 +264,7 @@ def run_pipeline(
         print(f"  [Phase 5] Running bumper OCR on {len(unknown_tracks)} unidentified tracks...")
         ocr_results = build_robot_identity_map(
             unknown_tracks, read_bumper_number, video_path,
-            frame_sample=200,   # cap at 200 frames to keep OCR fast
+            frame_sample=600,
         )
         for tid, info in ocr_results.items():
             robot_identity_map[tid] = info
@@ -326,7 +352,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 6 - Possession Engine")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from possession import build_possession_log, save_possession_log
 
@@ -338,6 +364,9 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     # FIELD AUTO-CALIBRATION (scoring zones + scoreboard)
     # -------------------------------------------------------------------------
+    print("\n" + "=" * 60, flush=True)
+    print("FIELD AUTO-CALIBRATION", flush=True)
+    print("=" * 60, flush=True)
     from field_calibration import calibrate_field
     calibrate_field(
         video_path      = video_path,
@@ -353,7 +382,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 7 - Trajectory Engine")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from trajectory import detect_all_scoring_events
 
@@ -370,7 +399,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 8 - Scoreboard OCR")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     import cv2
     from scoreboard import locate_scoreboard, read_score, detect_score_change
@@ -481,7 +510,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 9 - Attribution Engine")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from inference_engine import (
         build_score_timeline, compute_final_scores, save_score_timeline
@@ -561,7 +590,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 13 - Driving Style Analysis")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from driving_analysis import classify_all_robots, generate_driving_report
 
@@ -594,7 +623,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 14 - TBA Alliance Builder")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     tba_cfg_path = Path("configs/tba_config.json")
     pick_list   = []
@@ -646,7 +675,7 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 10 - Score Aggregation")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from count import aggregate_scores, generate_accuracy_report, save_accuracy_report
     from scoreboard import validate_attribution
@@ -665,22 +694,39 @@ def run_pipeline(
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("PHASE 11 - Export")
-    print("=" * 60)
+    print("=" * 60, flush=True)
 
     from export import (
-        export_csv, export_json,
+        export_csv, export_json, append_match_history,
         export_driving_report_csv, export_driving_report_json,
+        export_robot_positions,
     )
 
+    _full_results = {
+        "final_scores":    final_scores,
+        "score_timeline":  score_timeline,
+        "accuracy_report": report,
+        "video_file":      str(video_path),
+    }
+
     export_csv(final_scores, score_timeline, "data/exports/scores.csv")
-    export_json(
-        {
-            "final_scores":    final_scores,
-            "score_timeline":  score_timeline,
-            "accuracy_report": report,
-        },
-        "data/exports/results.json",
-    )
+    export_json(_full_results, "data/exports/results.json")
+
+    # Derive a human-readable match label from the video filename
+    import re as _re_ml
+    _vname = video_path.stem
+    _qual_m = _re_ml.search(r'qualif\w*\s+(\d+)', _vname, _re_ml.IGNORECASE)
+    _elim_m = _re_ml.search(r'(semi|final|quarter)\w*\s+(\d+)', _vname, _re_ml.IGNORECASE)
+    if _qual_m:
+        _match_label = f"Qual {_qual_m.group(1)}"
+    elif _elim_m:
+        _match_label = f"{_elim_m.group(1).capitalize()} {_elim_m.group(2)}"
+    else:
+        _match_label = _vname[:30]
+
+    append_match_history(_full_results, _match_label)
+    export_robot_positions(robot_tracks, robot_identity_map,
+                           "data/exports/robot_positions.json")
     export_driving_report_csv(driving_report, "data/exports/driving_report.csv")
     export_driving_report_json(driving_report, "data/exports/driving_report.json")
 
