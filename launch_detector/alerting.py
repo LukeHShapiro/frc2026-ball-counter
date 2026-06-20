@@ -33,7 +33,7 @@ class NtfyBackend(AlertBackend):
         topic: Optional[str] = None,
         server: str = "https://ntfy.sh",
     ):
-        self.topic = topic or os.environ.get("NTFY_TOPIC", "")
+        self.topic = topic or os.environ.get("NTFY_TOPIC", "wallops-launches")
         self.server = server
 
     def send(self, alert: Alert) -> bool:
@@ -120,8 +120,7 @@ class LogBackend(AlertBackend):
 def get_backends() -> list[AlertBackend]:
     backends: list[AlertBackend] = [LogBackend()]
 
-    if os.environ.get("NTFY_TOPIC"):
-        backends.append(NtfyBackend())
+    backends.append(NtfyBackend())
     if os.environ.get("WEBHOOK_URL"):
         backends.append(WebhookBackend())
 
