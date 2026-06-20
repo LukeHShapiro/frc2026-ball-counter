@@ -1,0 +1,29 @@
+{
+    "WFF": {
+        "name": "NASA Wallops Flight Facility",
+        "center_lat": 37.8319,
+        "center_lon": -75.4877,
+        "restricted_areas": ["R-6604A", "R-6604B", "R-6604C", "R-6604D", "R-6604E"],
+        "warning_areas": ["W-386"],
+        "maritime_authority": "USCG District 5 (Portsmouth, VA)",
+        "downrange_warning_source": "NGA NAVAREA IV / HYDROLANT",
+        "tier": "T1_federal",
+        "has_maritime_signal": true,
+        "notam_radius_nm": 30,
+        "notam_location_ids": ["KWAL"],
+        "fcc_search_radius_km": 15.0,
+        "scoring": {
+            "weights": {
+                "rf_license": 0.45,
+                "airspace_activation": 0.15,
+                "warning_area_hot": 0.20,
+                "maritime_hazard": 0.15,
+                "vessel_clearing": 0.05
+            },
+            "watch_threshold": 0.15,
+            "likely_threshold": 0.45,
+            "imminent_threshold": 0.75,
+            "correlation_window_hours": 72
+        }
+    }
+}
