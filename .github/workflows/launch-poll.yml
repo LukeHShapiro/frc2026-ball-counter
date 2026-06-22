@@ -1,0 +1,57 @@
+name: Wallops Launch Poll
+
+# Deploys the launch detector as a scheduled job.
+# - No server to maintain (runs on GitHub's infrastructure)
+# - No API keys required: FCC ELS scraping + ntfy push are both keyless
+# - FAA NOTAM is used automatically IF you add repo secrets (optional)
+#
+# The SQLite DB is persisted between runs via actions/cache so the
+# system remembers prior signals (dedup) and stored alerts.
+
+on:
+  schedule:
+    # Every hour, on the hour (UTC). GitHub may delay under load.
+    - cron: "0 * * * *"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wallops-poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    env:
+      # ntfy topic is also hardcoded as the default in code; set here for clarity.
+      NTFY_TOPIC: wallops-launches
+      # Optional FAA NOTAM creds — only used if you add them as repo secrets.
+      FAA_CLIENT_ID: ${{ secrets.FAA_CLIENT_ID }}
+      FAA_CLIENT_SECRET: ${{ secrets.FAA_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r launch_detector/requirements.txt
+
+      - name: Restore signal database
+        uses: actions/cache@v4
+        with:
+          path: data/launch_detector.db
+          # Rolling key so each run saves a fresh snapshot, restoring the latest.
+          key: wallops-db-${{ github.run_id }}
+          restore-keys: |
+            wallops-db-
+
+      - name: Poll all sources and alert
+        run: python -m launch_detector poll --site WFF
+
+      - name: Show recent alerts
+        if: always()
+        run: python -m launch_detector alerts --site WFF --limit 10
