@@ -19,6 +19,9 @@ configs/tba_config.json
 # Match-specific runtime data (regenerated each run)
 configs/match_identity.json
 
+# Launch detector runtime state (regenerated each run, persisted via CI cache)
+data/launch_detector.db
+
 # Large data files
 data/detections.json
 data/possession_log.json
